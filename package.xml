@@ -1,10 +1,10 @@
 <?xml version="1.0"?>
 <package>
-  <name>gazebosensorplugins</name>
+  <name>gazebo_tag_ranges_plugin</name>
   <version>0.0.0</version>
-  <description>The gazebosensorplugins package. Includes some plugins for Gazebo 9</description>
+  <description>The gazebo_tag_ranges_plugin package.</description>
 
-  <maintainer email="valentin.barral@udc.es">Valentin Barral</maintainer>
+  <maintainer email="alexandra.barry@students.wits.ac.za">Alexandra Barry</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>catkin</buildtool_depend>

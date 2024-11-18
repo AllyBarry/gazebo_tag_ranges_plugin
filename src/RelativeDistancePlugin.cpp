@@ -1,7 +1,7 @@
 /*
 MIT License
 
-Copyright (c) 2020 Group of Electronic Technology and Communications. University of A Coruna.
+Copyright (c) 2024 RAIL Laboratory. University of the Witwatersrand.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,7 @@ SOFTWARE.
 #include <gazebo/common/Plugin.hh>
 #include <gazebo/physics/physics.hh>
 #include <gazebo/physics/Collision.hh>
-#include "gazebo/physics/PhysicsTypes.hh"
+#include <gazebo/physics/PhysicsTypes.hh>
 #include <gazebo/common/common.hh>
 #include <gazebo/sensors/Noise.hh>
 #include <boost/bind.hpp>
@@ -36,10 +36,16 @@ SOFTWARE.
 #include <gazebo/rendering/DynamicLines.hh>
 #include <tf/transform_datatypes.h>
 
+
 namespace gazebo
-{
-    class UwbPlugin : public ModelPlugin
+{ 
+    using namespace std;
+
+    class RelativeDistancePlugin : public ModelPlugin
     {
+
+        string pluginName = "Relative Distance Plugin"; 
+        string topicName = "/ranging_tags/";
 
         double rangingStd[141][3] =
         {
@@ -633,7 +639,7 @@ namespace gazebo
         };
 
     public:
-        UwbPlugin() :
+        RelativeDistancePlugin() :
             ModelPlugin(),
             sequence(0)
         {
@@ -652,87 +658,119 @@ namespace gazebo
 
             if (!_sdf->HasElement("update_rate"))
             {
-                ROS_FATAL_STREAM("GTEC UWB Plugin needs the parameter: update_rate");
+                ROS_FATAL_STREAM(pluginName.c_str() << "Parameter Required: update_rate");
             }
 
+            if (!_sdf->HasElement("tag_link_name"))
+            {
+                ROS_FATAL_STREAM(pluginName.c_str() << "Parameter Required: tag_link_name");
+            }
+
+            if (!_sdf->HasElement("parent_prefix"))
+            {
+                ROS_FATAL_STREAM(pluginName.c_str() << "Parameter Required: parent_prefix");
+            }
+
+            if (!_sdf->HasElement("parent_id"))
+            {
+                ROS_FATAL_STREAM(pluginName.c_str() << "Parameter Required: parent_id");
+            }
+
+            // Parameters
             this->model = _parent;
             this->world = _parent->GetWorld();
             this->SetUpdateRate(_sdf->Get<double>("update_rate"));
-            this->nlosSoftWallWidth = 0.25;
-            this->tagZOffset = 0;
-            this->tagId = 0;
-            this->maxDBDistance = 14;
-            this->stepDBDistance = 0.1;
+            this->parentId = _sdf->Get<double>("parent_id");
+            this->parentPrefix = "uwb_device";
+            this->tagLinkName = "range_tag";
             this->allBeaconsAreLOS = false;
-            this->useParentAsReference = false;
+            this->tagLinks = vector<physics::LinkPtr>();
+            this->otherTagLinks = vector<physics::LinkPtr>();
 
-
-            if (_sdf->HasElement("all_los"))
+            // Read parameters from plugin xml
+            if (_sdf->HasElement("tag_link_name"))
             {
-                this->allBeaconsAreLOS = _sdf->Get<double>("all_los");
-            }
-
-            if (_sdf->HasElement("tag_id"))
-            {
-                this->tagId = _sdf->Get<double>("tag_id");
-            }
-
-            if (_sdf->HasElement("tag_z_offset"))
-            {
-                this->tagZOffset = _sdf->Get<double>("tag_z_offset");
-            }
-
-            if (_sdf->HasElement("nlosSoftWallWidth"))
-            {
-                this->nlosSoftWallWidth = _sdf->Get<double>("nlosSoftWallWidth");
-            }
-
-            if (_sdf->HasElement("tag_link"))
-            {
-                std::string tag_link = _sdf->Get<std::string>("tag_link");
-                this->tagLink = _parent->GetLink(tag_link);
-
-                ROS_INFO("Parent name: %s ChildCount: %d", _parent->GetName().c_str(), _parent->GetChildCount());
-                if (this->tagLink == NULL)
+                this->tagLinkName = _sdf->Get<string>("tag_link_name");
+                // this->tagLinks = _parent->GetLink(tag_link_name);
+                
+                vector<physics::LinkPtr> links = _parent->GetLinks();
+                for (int i = 0; i < links.size(); ++i)
                 {
-                    std::vector<physics::LinkPtr> links = _parent->GetLinks();
+                    // ROS_INFO("Link[%d]: %s", i, links[i]->GetName().c_str());
+                    if (links[i]->GetName().find(this->tagLinkName) == 0)
+                    {
+                        ROS_INFO("Adding Link: %s", links[i]->GetName().c_str());
+                        this->tagLinks.push_back(links[i]);
+                    }
+                }      
+            }
+
+            if (_sdf->HasElement("parent_prefix"))
+            {
+                this->parentPrefix = _sdf->Get<string>("parent_prefix");
+
+                ROS_INFO("%s Plugin - Loading neighbour tags", pluginName.c_str());
+
+                physics::Model_V models = this->world->Models();
+                physics::Model_V deviceModels;
+
+                for (auto& modelPtr : models)
+                {
+                    // const auto& links = modelPtr->GetLinks();
+                    std::cout << "Model: " << modelPtr->GetName() << std::endl;
+                    // for (const auto& link : links) {
+                    //     std::cout << "Link: " << link->GetName() << std::endl;
+                    // }
+                    // string aidStr = otherTag->GetName().substr(this->tagLinkName.length());
+                    // int aid = stoi(aidStr);
+                    if (modelPtr->GetName().find(this->parentPrefix) == 0)
+                    {
+                        string modelIndexStr = modelPtr->GetName().substr(this->parentPrefix.length()+1);
+                        std::cout << "Model: " << modelIndexStr << std::endl;
+                        int modelID = stoi(modelIndexStr);
+                        if (modelID != this->parentId){
+                            ROS_INFO("Adding Other Model: %s", modelPtr->GetName().c_str());
+                            deviceModels.push_back(modelPtr);
+                        }
+                    }
+                    // modelPtr->GetLink("link_test");
+                }
+
+                // Tag links for each device                
+                vector<physics::LinkPtr> links = vector<physics::LinkPtr>();
+                for (auto& deviceModelPtr : deviceModels)
+                {
+                    const auto& links = deviceModelPtr->GetLinks();
                     for (int i = 0; i < links.size(); ++i)
                     {
-                        ROS_INFO("Link[%d]: %s", i, links[i]->GetName().c_str());
-                    }
-                    ROS_INFO("UWB Plugin Tag link Is NULL We use The Parent As Reference");
-                    this->useParentAsReference = true;
+                        ROS_INFO("Parent[%s] - Link[%d]: %s", deviceModelPtr->GetName().c_str(), i, links[i]->GetName().c_str());
+                        string linkNameTemp = links[i]->GetName();
+                        // Prefix: .substr(0,length) -- "stringn"
+                        // Index: .substr(length) -- "_0"
+                        // ROS_INFO(links[i]->GetName().substr(this->tagLinkName.length()) == this->tagLinkName);
+                        if (links[i]->GetName().find(this->tagLinkName) == 0)
+                        {
+                            ROS_INFO("Adding Link: %s", links[i]->GetName().c_str());
+                            this->otherTagLinks.push_back(links[i]);
+                        }
+                    }    
                 }
+                  
             }
 
-            if (_sdf->HasElement("anchor_prefix"))
-            {
-                this->anchorPrefix = _sdf->Get<std::string>("anchor_prefix");
-            }
-            else
-            {
-                this->anchorPrefix = "uwb_anchor";
-            }
 
-            ROS_INFO("GTEC UWB Plugin is running. Tag %d", this->tagId);
-            ROS_INFO("GTEC UWB Plugin All parameters loaded");
+            ROS_INFO("%s Plugin is running. Parent %d", pluginName.c_str(), this->parentId);
 
             this->lastUpdateTime = common::Time(0.0);
 
-            std::string topicRanging = "/gtec/toa/ranging";
+            string topicRanging = topicName.c_str()+to_string(this->parentId)+"/ranges";
+            string topicOtherTags = topicName.c_str()+to_string(this->parentId)+"/otherTags";
 
-            ROS_INFO("GTEC UWB Plugin Ranging Publishing in %s", topicRanging.c_str());
-
-/*            stringStream.str("");
-            stringStream.clear();
-            stringStream << "/gtec/toa/anchors" << this->tagId;*/
-            std::string topicAnchors = "/gtec/toa/anchors";
-
-            ROS_INFO("GTEC UWB Plugin Anchors Position Publishing in %s", topicAnchors.c_str());
+            ROS_INFO("%s Plugin Ranging Publishing in %s", pluginName.c_str(), topicRanging.c_str());
 
             ros::NodeHandle n;
-            this->gtecUwbPub = n.advertise<gtec_msgs::Ranging>(topicRanging, 1000);
-            this->gtecAnchors = n.advertise<visualization_msgs::MarkerArray>(topicAnchors, 1000);
+            this->tagRangesPub = n.advertise<gtec_msgs::Ranging>(topicRanging, 1000);
+            this->otherTagsPub = n.advertise<visualization_msgs::MarkerArray>(topicOtherTags, 1000);
 
             this->firstRay = boost::dynamic_pointer_cast<physics::RayShape>(
                                  this->world->Physics()->CreateShape("ray", physics::CollisionPtr()));
@@ -741,7 +779,7 @@ namespace gazebo
                                   this->world->Physics()->CreateShape("ray", physics::CollisionPtr()));
 
             this->updateConnection =
-                event::Events::ConnectWorldUpdateBegin(boost::bind(&UwbPlugin::OnUpdate, this, _1));
+                event::Events::ConnectWorldUpdateBegin(boost::bind(&RelativeDistancePlugin::OnUpdate, this, _1));
         }
 
     public:
@@ -749,375 +787,373 @@ namespace gazebo
         {
             common::Time simTime = _info.simTime;
             common::Time elapsed = simTime - this->lastUpdateTime;
+
+            // For each local tag - ie. tag on the model
+            ignition::math::Pose3d tagPose;
+            // Relative to neighbouring model tags
+            ignition::math::Pose3d otherTagPose;
+            physics::LinkPtr otherTag;
+            physics::ModelPtr parentModel;
+
             if (elapsed >= this->updatePeriod)
             {
                 this->lastUpdateTime = _info.simTime;
 
-
-                ignition::math::Pose3d tagPose;
-
-                if (!this->useParentAsReference)
-                {
-                    tagPose = this->tagLink->WorldPose();
-                }
-                else
-                {
-                    tagPose = this->model->WorldPose();
-                }
-
-                ignition::math::Vector3d posCorrectedZ(tagPose.Pos().X(), tagPose.Pos().Y(), tagPose.Pos().Z() + this->tagZOffset);
-                tagPose.Set(posCorrectedZ, tagPose.Rot());
-                ignition::math::Vector3d currentTagPose(tagPose.Pos());
-
-                tf::Quaternion q(tagPose.Rot().X(),
-                                 tagPose.Rot().Y(),
-                                 tagPose.Rot().Z(),
-                                 tagPose.Rot().W());
-
-                tf::Matrix3x3 m(q);
-                double roll, pitch, currentYaw;
-                m.getRPY(roll, pitch, currentYaw);
-
-                // if (currentYaw < 0)
-                // {
-                //     currentYaw = 2 * M_PI + currentYaw;
-                // }
-
-                double startAngle = currentYaw;
-                double currentAngle = 0;
-                double arc = 3 * M_PI / 2;
-                int numAnglesToTestBySide = 30;
-                double incrementAngle = arc / numAnglesToTestBySide;
-                int totalNumberAnglesToTest = 1 + 2 * numAnglesToTestBySide;
-                double anglesToTest[totalNumberAnglesToTest];
-
-                anglesToTest[0] = startAngle;
-                for (int i = 1; i < totalNumberAnglesToTest; ++i)
-                {
-                    double angleToTest;
-                    if (i % 2 == 0)
-                    {
-                        angleToTest = startAngle - (i / 2) * incrementAngle;
-                        // if (angleToTest < 0)
-                        // {
-                        //     angleToTest = 2 * M_PI + angleToTest;
-                        // }
-                    }
-                    else
-                    {
-                        angleToTest = startAngle + (i - (i - 1) / 2) * incrementAngle;
-                        // if (angleToTest > 2 * M_PI)
-                        // {
-                        //     angleToTest = angleToTest - 2 * M_PI;
-                        // }
-                    }
-                    anglesToTest[i] = angleToTest;
-                }
-
                 visualization_msgs::MarkerArray markerArray;
-                visualization_msgs::MarkerArray interferencesArray;
+                visualization_msgs::Marker marker;
 
-                physics::Model_V models = this->world->Models();
-                for (physics::Model_V::iterator iter = models.begin(); iter != models.end(); ++iter)
+                for (vector<physics::LinkPtr>::iterator iter = this->otherTagLinks.begin(); iter != this->otherTagLinks.end(); ++iter)
                 {
+                    otherTag = *iter;
+                    parentModel = otherTag->GetModel();
+                    // Expects names to be in the format "prefix_<int>"
+                    string otherParentSubstr = parentModel->GetName().substr(this->parentPrefix.length()+1);
+                    string otherTagSubstr = otherTag->GetName().substr(this->tagLinkName.length()+1);
+                    
+                    if (!isValidNumber(otherParentSubstr)) {
+                        ROS_ERROR("Error converting parent substr to integer: %s", otherParentSubstr.c_str());
+                        continue;
+                    } 
+                    if (!isValidNumber(otherTagSubstr)) {
+                        ROS_ERROR("Error converting other tag substr to integer: %s", otherTagSubstr.c_str());
+                        continue;
+                    } 
+                    int otherParentID = std::stoi(otherParentSubstr);
+                    int otherTagID = std::stoi(otherTagSubstr);
+                    int uniqueTagID = otherParentID*100 + otherTagID;
 
-                    if ((*iter)->GetName().find(this->anchorPrefix) == 0)
+                    otherTagPose = otherTag->WorldPose();
+
+                    // ROS_INFO("%s Preparing the marker for Other Tag: %d", pluginName.c_str(), uniqueTagID);
+                    
+                    // Plot other tag
+                    marker.header.frame_id = "map";
+                    marker.header.stamp = ros::Time();
+                    marker.id = uniqueTagID;
+                    marker.type = visualization_msgs::Marker::CYLINDER;
+                    marker.action = visualization_msgs::Marker::ADD;
+                    marker.pose.position.x = otherTagPose.Pos().X();
+                    marker.pose.position.y = otherTagPose.Pos().Y();
+                    marker.pose.position.z = otherTagPose.Pos().Z();
+                    marker.pose.orientation.x = otherTagPose.Rot().X();
+                    marker.pose.orientation.y = otherTagPose.Rot().Y();
+                    marker.pose.orientation.z = otherTagPose.Rot().Z();
+                    marker.pose.orientation.w = otherTagPose.Rot().W();
+                    marker.scale.x = 0.2;
+                    marker.scale.y = 0.2;
+                    marker.scale.z = 0.5;
+                    marker.color.a = 1.0;
+                    markerArray.markers.push_back(marker);
+
+                    // Distance comparisons between tags
+                    for (auto& ownTagLink : this->tagLinks)
                     {
-                        physics::ModelPtr anchor = *iter;
-                        std::string aidStr = anchor->GetName().substr(this->anchorPrefix.length());
-                        int aid = std::stoi(aidStr);
-                        ignition::math::Pose3d anchorPose = anchor->WorldPose();
-
-                        LOSType losType = LOS;
-                        double distance = tagPose.Pos().Distance(anchorPose.Pos());
-                        double distanceAfterRebounds = 0;
-
-                        if (!allBeaconsAreLOS)
-                        {
-                            //We check if a ray can reach the anchor:
-                            double distanceToObstacleFromTag;
-                            std::string obstacleName;
-
-                            ignition::math::Vector3d directionToAnchor = (anchorPose.Pos() - tagPose.Pos()).Normalize();
-                            this->firstRay->Reset();
-                            this->firstRay->SetPoints(tagPose.Pos(), anchorPose.Pos());
-                            this->firstRay->GetIntersection(distanceToObstacleFromTag, obstacleName);
-
-                            if (obstacleName.compare("") == 0)
-                            {
-                                //There is no obstacle between anchor and tag, we use the LOS model
-                                losType = LOS;
-                                distanceAfterRebounds = distance;
-                            }
-                            else
-                            {
-
-                                //We use a second ray to measure the distance from anchor to tag, so we can
-                                //know what is the width of the walls
-                                double distanceToObstacleFromAnchor;
-                                std::string otherObstacleName;
-
-                                this->secondRay->Reset();
-                                this->secondRay->SetPoints(anchorPose.Pos(), tagPose.Pos());
-                                this->secondRay->GetIntersection(distanceToObstacleFromAnchor, otherObstacleName);
-
-                                double wallWidth = distance - distanceToObstacleFromTag - distanceToObstacleFromAnchor;
-
-                                if (wallWidth <= this->nlosSoftWallWidth && obstacleName.compare(otherObstacleName) == 0)
-                                {
-                                    //We use NLOS - SOFT model
-                                    losType = NLOS_S;
-                                    distanceAfterRebounds = distance;
-                                }
-                                else
-                                {
-                                    //We try to find a rebound to reach the anchor from the tag
-                                    bool end = false;
-
-                                    double maxDistance = 30;
-                                    double distanceToRebound = 0;
-                                    double distanceToFinalObstacle = 0;
-                                    double distanceNlosHard = 0;
-
-                                    double stepFloor = 1;
-                                    double startFloorDistanceCheck = 2;
-                                    int numStepsFloor = 6;
+                        tagPose = ownTagLink->WorldPose();
+                        // Tag number:
+                        string tagSubstr = ownTagLink->GetName().substr(this->tagLinkName.length()+1);
+                        int tagID = std::stoi(tagSubstr);
+                        // Distance to other tag:
+                        double distance = tagPose.Pos().Distance(otherTagPose.Pos());
+                        // Compose and publish message
+                        gtec_msgs::Ranging ranging_msg;
+                        ranging_msg.anchorId = uniqueTagID; // for now, anchorID is uniqueID of other tag
+                        ranging_msg.tagId = tagID;
+                        ranging_msg.range = distance;
+                        ranging_msg.seq = this->sequence;
+                        ranging_msg.rss = 0;
+                        ranging_msg.errorEstimation = 0.00393973;
+                        this->tagRangesPub.publish(ranging_msg);
+                    }
+                }
 
 
-                                    std::string finalObstacleName;
-                                    int indexRay = 0;
-                                    bool foundNlosH = false;
+                
+                        // if (!allBeaconsAreLOS)
+                        // {
+                        //     //We check if a ray can reach the otherTag:
+                        //     double distanceToObstacleFromTag;
+                        //     string obstacleName;
 
-                                    int currentFloorDistance = 0;
+                        //     ignition::math::Vector3d directionToOtherTag = (otherTagPose.Pos() - tagPose.Pos()).Normalize();
+                        //     this->firstRay->Reset();
+                        //     this->firstRay->SetPoints(tagPose.Pos(), otherTagPose.Pos());
+                        //     this->firstRay->GetIntersection(distanceToObstacleFromTag, obstacleName);
 
-                                    while (!end)
-                                    {
+                        //     if (obstacleName.compare("") == 0)
+                        //     {
+                        //         //There is no obstacle between otherTag and tag, we use the LOS model
+                        //         losType = LOS;
+                        //         distanceAfterRebounds = distance;
+                        //     }
+                        //     else
+                        //     {
+                        //         //We use a second ray to measure the distance from otherTag to tag, so we can
+                        //         //know what is the width of the walls
+                        //         double distanceToObstacleFromOtherTag;
+                        //         string otherObstacleName;
 
-                                        currentAngle = anglesToTest[indexRay];
+                        //         this->secondRay->Reset();
+                        //         this->secondRay->SetPoints(otherTagPose.Pos(), tagPose.Pos());
+                        //         this->secondRay->GetIntersection(distanceToObstacleFromOtherTag, otherObstacleName);
+
+                        //         double wallWidth = distance - distanceToObstacleFromTag - distanceToObstacleFromOtherTag;
+
+                                // if (wallWidth <= this->nlosSoftWallWidth && obstacleName.compare(otherObstacleName) == 0)
+                                // {
+                                //     //We use NLOS - SOFT model
+                                //     losType = NLOS_S;
+                                //     distanceAfterRebounds = distance;
+                                // }
+                                // else
+                                // {
+                                //     //We try to find a rebound to reach the otherTag from the tag
+                                //     bool end = false;
+
+                                //     double maxDistance = 30;
+                                //     double distanceToRebound = 0;
+                                //     double distanceToFinalObstacle = 0;
+                                //     double distanceNlosHard = 0;
+
+                                //     double stepFloor = 1;
+                                //     double startFloorDistanceCheck = 2;
+                                //     int numStepsFloor = 6;
 
 
-                                        double x = currentTagPose.X() + maxDistance * cos(currentAngle);
-                                        double y = currentTagPose.Y() + maxDistance * sin(currentAngle);
-                                        double z = currentTagPose.Z();
+                                //     string finalObstacleName;
+                                //     int indexRay = 0;
+                                //     bool foundNlosH = false;
 
-                                        if (currentFloorDistance>0){
-                                          double tanAngleFloor = (startFloorDistanceCheck + stepFloor*(currentFloorDistance-1))/currentTagPose.Z();
-                                          double angleFloor = atan(tanAngleFloor);
+                                //     int currentFloorDistance = 0;
 
-                                          double h = sin(angleFloor)*maxDistance;
+                                //     while (!end)
+                                //     {
 
-                                          double horizontalDistance = sqrt(maxDistance*maxDistance - h*h);
+                                //         currentAngle = anglesToTest[indexRay];
 
-                                          x = currentTagPose.X() + horizontalDistance * cos(currentAngle);
-                                          y = currentTagPose.Y() + horizontalDistance * sin(currentAngle);
 
-                                          z = -1*(h - currentTagPose.Z());
+                                //         double x = currentTagPose.X() + maxDistance * cos(currentAngle);
+                                //         double y = currentTagPose.Y() + maxDistance * sin(currentAngle);
+                                //         double z = currentTagPose.Z();
 
-                                        }
+                                //         if (currentFloorDistance>0){
+                                //           double tanAngleFloor = (startFloorDistanceCheck + stepFloor*(currentFloorDistance-1))/currentTagPose.Z();
+                                //           double angleFloor = atan(tanAngleFloor);
 
-                                        ignition::math::Vector3d rayPoint(x, y, z);
+                                //           double h = sin(angleFloor)*maxDistance;
 
-                                        this->firstRay->Reset();
-                                        this->firstRay->SetPoints(currentTagPose, rayPoint);
-                                        this->firstRay->GetIntersection(distanceToRebound, obstacleName);
+                                //           double horizontalDistance = sqrt(maxDistance*maxDistance - h*h);
 
-                                        if (obstacleName.compare("") != 0)
-                                        {
-                                            ignition::math::Vector3d collisionPoint(currentTagPose.X() + distanceToRebound * cos(currentAngle), currentTagPose.Y() + distanceToRebound * sin(currentAngle), currentTagPose.Z());
+                                //           x = currentTagPose.X() + horizontalDistance * cos(currentAngle);
+                                //           y = currentTagPose.Y() + horizontalDistance * sin(currentAngle);
 
-                                            if (currentFloorDistance>0){
-                                                //if (obstacleName.compare("FloorStatic)") == 0){
-                                                  // ROS_INFO("TOUCHED GROUND %s - Z: %f", obstacleName.c_str(), z);   
-                                               //}
+                                //           z = -1*(h - currentTagPose.Z());
+
+                                //         }
+
+                                //         ignition::math::Vector3d rayPoint(x, y, z);
+
+                                //         this->firstRay->Reset();
+                                //         this->firstRay->SetPoints(currentTagPose, rayPoint);
+                                //         this->firstRay->GetIntersection(distanceToRebound, obstacleName);
+
+                                //         if (obstacleName.compare("") != 0)
+                                //         {
+                                //             ignition::math::Vector3d collisionPoint(currentTagPose.X() + distanceToRebound * cos(currentAngle), currentTagPose.Y() + distanceToRebound * sin(currentAngle), currentTagPose.Z());
+
+                                //             if (currentFloorDistance>0){
+                                //                 //if (obstacleName.compare("FloorStatic)") == 0){
+                                //                   // ROS_INFO("TOUCHED GROUND %s - Z: %f", obstacleName.c_str(), z);   
+                                //                //}
                                                 
-                                                collisionPoint.Set(currentTagPose.X() + distanceToRebound * cos(currentAngle), currentTagPose.Y() + distanceToRebound * sin(currentAngle), 0.0);
-                                            }
+                                //                 collisionPoint.Set(currentTagPose.X() + distanceToRebound * cos(currentAngle), currentTagPose.Y() + distanceToRebound * sin(currentAngle), 0.0);
+                                //             }
 
-                                            //We try to reach the anchor from here
-                                            this->secondRay->Reset();
-                                            this->secondRay->SetPoints(collisionPoint, anchorPose.Pos());
-                                            this->secondRay->GetIntersection(distanceToFinalObstacle, finalObstacleName);
+                                //             //We try to reach the otherTag from here
+                                //             this->secondRay->Reset();
+                                //             this->secondRay->SetPoints(collisionPoint, otherTagPose.Pos());
+                                //             this->secondRay->GetIntersection(distanceToFinalObstacle, finalObstacleName);
 
-                                            if (finalObstacleName.compare("") == 0)
-                                            {
-
-
-
-                                                //We reach the anchor after one rebound
-                                                distanceToFinalObstacle = anchorPose.Pos().Distance(collisionPoint);
-
-                                                if (currentFloorDistance>0 ){
-                                                      //ROS_INFO("Rebound in GROUND %s - Distance: %f", obstacleName.c_str(), distanceToFinalObstacle);   
-                                                }
+                                //             if (finalObstacleName.compare("") == 0)
+                                //             {
 
 
-                                                if (distanceToRebound + distanceToFinalObstacle <= maxDBDistance)
-                                                {
-                                                    foundNlosH = true;
-                                                    //We try to find the shortest rebound
-                                                    if (distanceNlosHard < 0.1)
-                                                    {
-                                                        distanceNlosHard = distanceToRebound + distanceToFinalObstacle;
-                                                    }
-                                                    else if (distanceNlosHard > distanceToRebound + distanceToFinalObstacle)
-                                                    {
-                                                        distanceNlosHard = distanceToRebound + distanceToFinalObstacle;
-                                                    }
-                                                }
-                                            }
-                                        }
 
-                                        if (indexRay < totalNumberAnglesToTest - 1)
-                                        {
-                                            indexRay += 1;
-                                        }
-                                        else
-                                        {
-                                          if (currentFloorDistance<numStepsFloor){
+                                //                 //We reach the otherTag after one rebound
+                                //                 distanceToFinalObstacle = otherTagPose.Pos().Distance(collisionPoint);
 
-                                            currentFloorDistance+=1;
-                                            indexRay= 0;
-
-                                          } else {
-                                              end = true;  
-                                          }
-
-                                        }
-                                    }
-
-                                    if (foundNlosH)
-                                    {
-                                        //We use the NLOS Hard Model with distance = distanceNlosHard
-                                        losType = NLOS_H;
-                                        distanceAfterRebounds = distanceNlosHard;
-                                    }
-                                    else
-                                    {
-                                        //We can not reach the anchor, no ranging.
-                                        losType = NLOS;
-                                    }
-                                }
-                            }
-
-                        }
-                        else
-                        {
-                            //All beacons are LOS
-                            losType = LOS;
-                            distanceAfterRebounds = distance;
-                        }
-
-                        if ((losType == LOS || losType == NLOS_S) && distanceAfterRebounds > maxDBDistance)
-                        {
-                            losType = NLOS;
-                        }
-
-                        if (losType == NLOS_H && distanceAfterRebounds > maxDBDistance)
-                        {
-                            losType = NLOS;
-                        }
-
-                        if (losType != NLOS)
-                        {
-
-                            int indexScenario = 0;
-                            if (losType == NLOS_S)
-                            {
-                                indexScenario = 2;
-                            }
-                            else if (losType == NLOS_H)
-                            {
-                                indexScenario = 1;
-                            }
-
-                            int indexRangingOffset = (int) round(distanceAfterRebounds / stepDBDistance);
-
-                            double distanceAfterReboundsWithOffset = distanceAfterRebounds;
-                            if (losType == LOS)
-                            {
-                                distanceAfterReboundsWithOffset = distanceAfterRebounds + rangingOffset[indexRangingOffset][0] / 1000.0;
-                            }
-                            else if (losType == NLOS_S)
-                            {
-                                distanceAfterReboundsWithOffset = distanceAfterRebounds + rangingOffset[indexRangingOffset][1] / 1000.0;
-                            }
-
-                            int indexRanging = (int) round(distanceAfterReboundsWithOffset / stepDBDistance);
+                                //                 if (currentFloorDistance>0 ){
+                                //                       //ROS_INFO("Rebound in GROUND %s - Distance: %f", obstacleName.c_str(), distanceToFinalObstacle);   
+                                //                 }
 
 
-                            std::normal_distribution<double> distributionRanging(distanceAfterReboundsWithOffset * 1000, rangingStd[indexRanging][indexScenario]);
-                            std::normal_distribution<double> distributionRss(rssMean[indexRanging][indexScenario], rssStd[indexRanging][indexScenario]);
+                                //                 if (distanceToRebound + distanceToFinalObstacle <= maxDBDistance)
+                                //                 {
+                                //                     foundNlosH = true;
+                                //                     //We try to find the shortest rebound
+                                //                     if (distanceNlosHard < 0.1)
+                                //                     {
+                                //                         distanceNlosHard = distanceToRebound + distanceToFinalObstacle;
+                                //                     }
+                                //                     else if (distanceNlosHard > distanceToRebound + distanceToFinalObstacle)
+                                //                     {
+                                //                         distanceNlosHard = distanceToRebound + distanceToFinalObstacle;
+                                //                     }
+                                //                 }
+                                //             }
+                                //         }
 
-                            double rangingValue = distributionRanging(this->random_generator);
-                            double powerValue = distributionRss(this->random_generator);
+                                //         if (indexRay < totalNumberAnglesToTest - 1)
+                                //         {
+                                //             indexRay += 1;
+                                //         }
+                                //         else
+                                //         {
+                                //           if (currentFloorDistance<numStepsFloor){
 
-                            if (powerValue < minPower[indexScenario])
-                            {
-                                losType = NLOS;
-                            }
+                                //             currentFloorDistance+=1;
+                                //             indexRay= 0;
+
+                                //           } else {
+                                //               end = true;  
+                                //           }
+
+                                //         }
+                                //     }
+
+                                //     if (foundNlosH)
+                                //     {
+                                //         //We use the NLOS Hard Model with distance = distanceNlosHard
+                                //         losType = NLOS_H;
+                                //         distanceAfterRebounds = distanceNlosHard;
+                                //     }
+                                //     else
+                                //     {
+                                //         //We can not reach the otherTag, no ranging.
+                                //         losType = NLOS;
+                                //     }
+                                // }
+                //             }
+
+                //         }
+                //         else
+                //         {
+                //             //All beacons are LOS
+                //             losType = LOS;
+                //             distanceAfterRebounds = distance;
+                //         }
+
+                //         if ((losType == LOS || losType == NLOS_S) && distanceAfterRebounds > maxDBDistance)
+                //         {
+                //             losType = NLOS;
+                //         }
+
+                //         if (losType == NLOS_H && distanceAfterRebounds > maxDBDistance)
+                //         {
+                //             losType = NLOS;
+                //         }
+
+                //         if (losType != NLOS)
+                //         {
+
+                //             int indexScenario = 0;
+                //             if (losType == NLOS_S)
+                //             {
+                //                 indexScenario = 2;
+                //             }
+                //             else if (losType == NLOS_H)
+                //             {
+                //                 indexScenario = 1;
+                //             }
+
+                //             int indexRangingOffset = (int) round(distanceAfterRebounds / stepDBDistance);
+
+                //             double distanceAfterReboundsWithOffset = distanceAfterRebounds;
+                //             if (losType == LOS)
+                //             {
+                //                 distanceAfterReboundsWithOffset = distanceAfterRebounds + rangingOffset[indexRangingOffset][0] / 1000.0;
+                //             }
+                //             else if (losType == NLOS_S)
+                //             {
+                //                 distanceAfterReboundsWithOffset = distanceAfterRebounds + rangingOffset[indexRangingOffset][1] / 1000.0;
+                //             }
+
+                //             int indexRanging = (int) round(distanceAfterReboundsWithOffset / stepDBDistance);
+
+
+                //             normal_distribution<double> distributionRanging(distanceAfterReboundsWithOffset * 1000, rangingStd[indexRanging][indexScenario]);
+                //             normal_distribution<double> distributionRss(rssMean[indexRanging][indexScenario], rssStd[indexRanging][indexScenario]);
+
+                //             double rangingValue = distributionRanging(this->random_generator);
+                //             double powerValue = distributionRss(this->random_generator);
+
+                //             if (powerValue < minPower[indexScenario])
+                //             {
+                //                 losType = NLOS;
+                //             }
                             
 
-                            if (losType!=NLOS)
-                            {
-                                gtec_msgs::Ranging ranging_msg;
-                                ranging_msg.anchorId = aid;
-                                ranging_msg.tagId = this->tagId;
-                                ranging_msg.range = rangingValue;
-                                ranging_msg.seq = this->sequence;
-                                ranging_msg.rss = powerValue;
-                                ranging_msg.errorEstimation = 0.00393973;
-                                this->gtecUwbPub.publish(ranging_msg);
-                            }
-                        }
+                //             if (losType!=NLOS)
+                //             {
+                //                 // Publish the range measurements
+                //                 gtec_msgs::Ranging ranging_msg;
+                //                 ranging_msg.anchorId = aid;
+                //                 ranging_msg.tagId = this->tagId;
+                //                 ranging_msg.range = rangingValue;
+                //                 ranging_msg.seq = this->sequence;
+                //                 ranging_msg.rss = powerValue;
+                //                 ranging_msg.errorEstimation = 0.00393973;
+                //                 this->tagRangesPub.publish(ranging_msg);
+                //             }
+                //         }
 
-                        visualization_msgs::Marker marker;
-                        marker.header.frame_id = "world";
-                        marker.header.stamp = ros::Time();
-                        marker.id = aid;
-                        marker.type = visualization_msgs::Marker::CYLINDER;
-                        marker.action = visualization_msgs::Marker::ADD;
-                        marker.pose.position.x = anchorPose.Pos().X();
-                        marker.pose.position.y = anchorPose.Pos().Y();
-                        marker.pose.position.z = anchorPose.Pos().Z();
-                        marker.pose.orientation.x = anchorPose.Rot().X();
-                        marker.pose.orientation.y = anchorPose.Rot().Y();
-                        marker.pose.orientation.z = anchorPose.Rot().Z();
-                        marker.pose.orientation.w = anchorPose.Rot().W();
-                        marker.scale.x = 0.2;
-                        marker.scale.y = 0.2;
-                        marker.scale.z = 0.5;
-                        marker.color.a = 1.0;
+                //         visualization_msgs::Marker marker;
+                //         marker.header.frame_id = "map";
+                //         marker.header.stamp = ros::Time();
+                //         marker.id = aid;
+                //         marker.type = visualization_msgs::Marker::CYLINDER;
+                //         marker.action = visualization_msgs::Marker::ADD;
+                //         marker.pose.position.x = otherTagPose.Pos().X();
+                //         marker.pose.position.y = otherTagPose.Pos().Y();
+                //         marker.pose.position.z = otherTagPose.Pos().Z();
+                //         marker.pose.orientation.x = otherTagPose.Rot().X();
+                //         marker.pose.orientation.y = otherTagPose.Rot().Y();
+                //         marker.pose.orientation.z = otherTagPose.Rot().Z();
+                //         marker.pose.orientation.w = otherTagPose.Rot().W();
+                //         marker.scale.x = 0.2;
+                //         marker.scale.y = 0.2;
+                //         marker.scale.z = 0.5;
+                //         marker.color.a = 1.0;
 
-                        if (losType == LOS)
-                        {
-                            marker.color.r = 0.0;
-                            marker.color.g = 0.6;
-                            marker.color.b = 0.0;
-                        }
-                        else if (losType == NLOS_S)
-                        {
-                            marker.color.r = 0.6;
-                            marker.color.g = 0.6;
-                            marker.color.b = 0.0;
-                        }
-                        else if (losType == NLOS_H)
-                        {
-                            marker.color.r = 0.0;
-                            marker.color.g = 0.0;
-                            marker.color.b = 0.6;
-                        }
-                        else if (losType == NLOS)
-                        {
-                            marker.color.r = 0.6;
-                            marker.color.g = 0.0;
-                            marker.color.b = 0.0;
-                        }
+                //         if (losType == LOS)
+                //         {
+                //             marker.color.r = 0.0;
+                //             marker.color.g = 0.6;
+                //             marker.color.b = 0.0;
+                //         }
+                //         else if (losType == NLOS_S)
+                //         {
+                //             marker.color.r = 0.6;
+                //             marker.color.g = 0.6;
+                //             marker.color.b = 0.0;
+                //         }
+                //         else if (losType == NLOS_H)
+                //         {
+                //             marker.color.r = 0.0;
+                //             marker.color.g = 0.0;
+                //             marker.color.b = 0.6;
+                //         }
+                //         else if (losType == NLOS)
+                //         {
+                //             marker.color.r = 0.6;
+                //             marker.color.g = 0.0;
+                //             marker.color.b = 0.0;
+                //         }
 
-                        markerArray.markers.push_back(marker);
-                    }
-                }
+                //         markerArray.markers.push_back(marker);
+                //     }
+                // }
 
-                this->gtecAnchors.publish(markerArray);
+                this->otherTagsPub.publish(markerArray);
                 this->sequence++;
             }
         }
@@ -1135,10 +1171,15 @@ namespace gazebo
             }
         }
 
+        bool isValidNumber(const std::string& str) 
+        {
+            return !str.empty() && std::all_of(str.begin(), str.end(), ::isdigit);
+        }
+
     public:
         void Reset() override
         {
-            ROS_INFO("GTEC UWB Plugin RESET");
+            ROS_INFO("%s Plugin RESET", pluginName.c_str());
             this->lastUpdateTime = common::Time(0.0);
         }
 
@@ -1159,13 +1200,17 @@ namespace gazebo
     private:
         double tagZOffset;
     private:
-        std::string anchorPrefix;
+        string tagLinkName;
     private:
-        physics::LinkPtr tagLink;
+        string parentPrefix;
     private:
-        ros::Publisher gtecUwbPub;
+        vector<physics::LinkPtr> tagLinks;
     private:
-        ros::Publisher gtecAnchors;
+        vector<physics::LinkPtr> otherTagLinks;
+    private:
+        ros::Publisher tagRangesPub;
+    private:
+        ros::Publisher otherTagsPub;
     private:
         unsigned char sequence;
     private:
@@ -1177,13 +1222,12 @@ namespace gazebo
     private:
         bool allBeaconsAreLOS;
     private:
-        int tagId;
+        int parentId;
     private:
-        bool useParentAsReference;
-    private:
-        std::default_random_engine random_generator;
+        default_random_engine random_generator;
     };
 
-    GZ_REGISTER_MODEL_PLUGIN(UwbPlugin)
+    // Register this plugin with the simulator
+    GZ_REGISTER_MODEL_PLUGIN(RelativeDistancePlugin)
 }
 

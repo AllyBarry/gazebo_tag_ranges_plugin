@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.0)
-project(gazebosensorplugins)
+project(gazebo_tag_ranges_plugin)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
@@ -27,21 +27,10 @@ find_package(gazebo REQUIRED)
 link_directories(${GAZEBO_LIBRARY_DIRS})
 include_directories(${Boost_INCLUDE_DIR} ${catkin_INCLUDE_DIRS} ${GAZEBO_INCLUDE_DIRS})
 
-add_library(gtec_uwb_plugin src/UwbPlugin.cpp)
-target_link_libraries(gtec_uwb_plugin ${catkin_LIBRARIES} ${GAZEBO_LIBRARIES} ${Boost_LIBRARIES})
-add_dependencies(gtec_uwb_plugin ${catkin_EXPORTED_TARGETS})
+add_library(tag_ranges_plugin src/RelativeDistancePlugin.cpp)
+target_link_libraries(tag_ranges_plugin ${catkin_LIBRARIES} ${GAZEBO_LIBRARIES} ${Boost_LIBRARIES})
+add_dependencies(tag_ranges_plugin ${catkin_EXPORTED_TARGETS})
 
-add_library(gtec_magnetic_distortion_plugin src/MagneticDistortionPlugin.cpp)
-target_link_libraries(gtec_magnetic_distortion_plugin ${catkin_LIBRARIES} ${GAZEBO_LIBRARIES} ${Boost_LIBRARIES})
-add_dependencies(gtec_magnetic_distortion_plugin ${catkin_EXPORTED_TARGETS})
-
-add_library(custom_skid_steer_drive src/CustomSkidSteerDrive.cpp src/CustomSkidSteerDrive.h)
-target_link_libraries(custom_skid_steer_drive ${catkin_LIBRARIES} ${GAZEBO_LIBRARIES} ${Boost_LIBRARIES})
-add_dependencies(custom_skid_steer_drive ${catkin_EXPORTED_TARGETS})
-
-add_library(gtec_tag_pos_publisher_plugin src/TagPosPublisherPlugin.cpp)
-target_link_libraries(gtec_tag_pos_publisher_plugin ${catkin_LIBRARIES} ${GAZEBO_LIBRARIES} ${Boost_LIBRARIES})
-add_dependencies(gtec_tag_pos_publisher_plugin ${catkin_EXPORTED_TARGETS})
 
 catkin_package(
   DEPENDS 
